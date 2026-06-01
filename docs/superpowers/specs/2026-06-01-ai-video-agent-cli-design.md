@@ -69,7 +69,7 @@ The Agent flow is:
 6. Build prompts and API-style config.
 7. Call the video provider.
 8. Save artifacts.
-9. Validate that expected files exist and are non-empty.
+9. Validate artifacts according to the success or failure validation policy.
 10. Print final paths.
 
 The CLI prints stable progress states:
@@ -174,6 +174,31 @@ If the provider fails, the Agent keeps already available debugging artifacts:
 - `log.jsonl`
 
 It does not write `video_001.mp4` on provider failure. The CLI prints `FAILED` and exits with code `3`.
+
+### Validation Policy
+
+Validation is mode-specific.
+
+Successful runs must satisfy all of these checks:
+
+- `video_001.mp4` exists and is non-empty.
+- `storyboard.md`, `prompt.txt`, `config.json`, `generation_record.json`, `manifest.json`, and `log.jsonl` exist and are non-empty.
+- `generation_record.json` has `status = "succeeded"` and `output_file = "video_001.mp4"`.
+- `manifest.json` includes all success artifacts.
+- `manifest.json` records hashes for all artifacts except itself.
+- `manifest.json.files["manifest.json"].sha256` is `null`.
+- `log.jsonl` contains `DONE` and does not end in `FAILED`.
+
+Provider-failure runs must satisfy all of these checks:
+
+- `video_001.mp4` does not exist.
+- `storyboard.md`, `prompt.txt`, `config.json`, `generation_record.json`, `manifest.json`, and `log.jsonl` exist and are non-empty when they were created before provider failure.
+- `generation_record.json` has `status = "failed"` and a non-empty `error_message`.
+- `manifest.json` omits `video_001.mp4`.
+- `manifest.json.files["manifest.json"].sha256` is `null`.
+- `log.jsonl` contains `FAILED`.
+
+Input, path, and pre-planning failures may not have all artifacts available. In those cases the CLI returns the corresponding non-zero exit code and validates only the files that were actually written.
 
 ## Data Flow
 
@@ -309,7 +334,8 @@ Artifacts are written as plain text, JSON, and deterministic mock MP4 bytes so t
     "manifest.json": {
       "purpose": "Run-level artifact index",
       "size": 768,
-      "sha256": "64-character lowercase sha256 hex"
+      "sha256": null,
+      "hash_policy": "omitted-for-self-to-avoid-recursive-hash"
     },
     "log.jsonl": {
       "purpose": "Structured progress events",
@@ -320,6 +346,8 @@ Artifacts are written as plain text, JSON, and deterministic mock MP4 bytes so t
   "created_at": "2026-06-01T12:00:00+08:00"
 }
 ```
+
+The manifest indexes only artifacts actually written for the run. Successful runs include `video_001.mp4`; provider-failure runs omit `video_001.mp4`. `manifest.json` records hashes for other artifacts, but its own `sha256` is always `null` because hashing a file that contains its own hash creates a recursive value. V1 may still record the final manifest file size after writing.
 
 For reproducibility, the Agent computes:
 
@@ -361,12 +389,15 @@ Use Python's built-in `unittest` so the empty repository does not need dependenc
 - Storyboard shots use the fixed `Shot` schema.
 - Prompt generation includes concrete visual, motion, parameter, and negative-prompt sections.
 - `prompt.txt`, `config.json`, `generation_record.json`, `manifest.json`, and `log.jsonl` keep separate responsibilities.
+- `manifest.json` avoids recursive self-hashing by using `sha256 = null` for its own file entry.
 - `run_id` ignores timestamps and timestamped output paths.
 - End-to-end CLI/Agent run writes all expected success artifacts.
 - Progress states are emitted in the expected order for a successful run.
 - Provider failure emits `FAILED`, writes the available error artifacts, does not write `video_001.mp4`, and does not retry.
+- Success and provider-failure validation rules are tested separately.
 - CLI exit codes match success, input, path/file, provider, and validation outcomes.
-- Validation fails for missing or empty files.
+- Success validation fails for missing or empty required success artifacts.
+- Provider-failure validation accepts a missing `video_001.mp4` only when `generation_record.json.status = "failed"`.
 
 ## Out Of Scope For V1
 
